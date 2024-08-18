@@ -2,5 +2,7 @@
 .idea
 .vscode
 .ipynb_checkpoints
+.milvus_demo.db.lock
 __pycache__
 data
+milvus_demo.db
