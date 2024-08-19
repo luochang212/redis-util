@@ -1,6 +1,15 @@
+import os
 import json
+import numpy as np
 import redis
 import redisearch
+
+from sentence_transformers import SentenceTransformer
+
+
+HF_ENDPOINT = 'https://hf-mirror.com'
+DEFAULT_MODEL = 'sentence-transformers/all-MiniLM-L6-v2'
+DEFAULT_MODEL_PATH = './all-MiniLM-L6-v2'
 
 
 class RedisHandler:
@@ -46,10 +55,10 @@ class RediSearchHandler:
                  host: str = 'localhost',
                  port: int = 6379,
                  password: str = None):
-        if password is None:
-            self.rc = redisearch.Client(name, host=host, port=port)
-        else:
+        if password:
             self.rc = redisearch.Client(name, password=password, host=host, port=port)
+        else:
+            self.rc = redisearch.Client(name, host=host, port=port)
 
     def ping(self):
         self.rc.redis.ping()
@@ -62,15 +71,15 @@ class RediSearchHandler:
 
 
 class RedisIndexHandler:
-    
+
     def __init__(self,
                  host: str = 'localhost',
                  port: int = 6379,
                  password: str = None):
-        if password is None:
-            self.rc = redis.Redis(host=host, port=port)
-        else:
+        if password:
             self.rc = redis.Redis(host=host, port=port, password=password)
+        else:
+            self.rc = redis.Redis(host=host, port=port)
 
     def ping(self):
         self.rc.ping()
@@ -97,6 +106,63 @@ class RedisIndexHandler:
             'PARAMS', '2', 'query_vec', query_vec_binary, 'DIALECT', '2'
         ]
         return self.rc.execute_command(*cmd)
+
+
+def gen_func(set_with_expire_func, expire_time):
+    def func(*args, **kwargs):
+        return set_with_expire_func(*args, **kwargs, expire_time=expire_time)
+    return func
+
+
+class VectorEngine:
+
+    def __init__(self,
+                 redis_client: RedisHandler,
+                 expire_time: int = None,
+                 model_name: str = DEFAULT_MODEL,
+                 model_path: str = DEFAULT_MODEL_PATH,
+                 hf_endpoint: str = DEFAULT_MODEL_PATH):
+        # model env
+        os.environ['SENTENCE_TRANSFORMERS_HOME'] = model_path
+        if hf_endpoint:
+            os.environ['HF_ENDPOINT'] = hf_endpoint
+
+        self.redis_client = redis_client
+        self.expire_time = expire_time
+        self.model_name = model_name
+        self.model = SentenceTransformer(model_name)
+        self.cast = Cast()
+
+        if expire_time:
+            self.set_func = gen_func(self.redis_client.set_with_expire, expire_time)
+        else:
+            self.set_func = self.redis_client.set
+
+    def ping(self):
+        return self.redis_client.ping()
+
+    def encode(self, doc) -> np.ndarray:
+        return self.model.encode(doc)
+
+    def get_and_set(self, doc) -> list:
+        '''If the key does not exist, insert a new record'''
+        v_str = self.redis_client.get(doc)
+        if v_str:
+            v = self.cast.str2list(v_str)
+        else:
+            v = self.encode(doc).tolist()
+            v_str = self.cast.list2str(v)
+            if not self.set_func(doc, v_str):
+                print(f'fail to insert {doc}')
+
+        return v
+
+    def update(self, doc: str, embedding: list):
+        embedding_str = self.cast.list2str(embedding)
+        return self.redis_client.update(doc, embedding_str)
+
+    def delete(self, doc):
+        return self.redis_client.delete(doc)
 
 
 class Cast:
