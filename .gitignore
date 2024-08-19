@@ -7,3 +7,4 @@ __pycache__
 data
 milvus_demo.db
 all-MiniLM-L6-v2
+all.ipynb
